@@ -1,4 +1,7 @@
-# Real-Time Accounting Data Pipeline  v2
+# Real-Time Accounting Data Pipeline
+
+![Architecture Overview](./image/architecture.png)
+
 
 Same streaming core as v1 — Faker → Kafka → Bridge → Iceberg → Trino — with two key upgrades:
 
