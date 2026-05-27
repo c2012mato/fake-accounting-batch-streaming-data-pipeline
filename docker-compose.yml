@@ -1,0 +1,327 @@
+# ════════════════════════════════════════════════════════════════
+#  Real-Time Accounting Data Pipeline  v2
+#  Stack: Faker → Kafka → Bridge → Iceberg (MinIO) → Trino
+#         + Prometheus (ETL metrics) → Grafana (live dashboards)
+#
+#  Pinned versions:
+#    confluentinc/cp-kafka  7.7.0  (Kafka 3.7, KRaft, no Zookeeper)
+#    quay.io/minio/minio    RELEASE.2025-09-07T16-13-09Z
+#    minio/mc               RELEASE.2025-08-13T08-35-41Z
+#    flink                  1.20.4-scala_2.12-java11
+#    trinodb/trino          480
+#    python                 3.12.9-slim
+#    prom/prometheus        v2.55.1
+#    grafana/grafana-oss    11.3.0
+# ════════════════════════════════════════════════════════════════
+
+networks:
+  pipeline:
+    driver: bridge
+
+volumes:
+  minio-data:
+  flink-checkpoints:
+  prometheus-data:
+  grafana-data:
+
+services:
+
+  # ─────────────────────────────────────────────────────────────
+  # 1. Confluent Kafka 7.7.0 (Kafka 3.7) — KRaft mode (no Zookeeper)
+  # ─────────────────────────────────────────────────────────────
+  kafka:
+    image: confluentinc/cp-kafka:7.7.0
+    container_name: kafka
+    restart: unless-stopped
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT
+      KAFKA_CONTROLLER_QUORUM_VOTERS: "1@kafka:9093"
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      CLUSTER_ID: MkU3OEVBNTcwNTJENDM2Qk
+    ports:
+      - "9092:9092"
+    networks:
+      - pipeline
+    healthcheck:
+      test: ["CMD", "kafka-topics", "--bootstrap-server", "localhost:9092", "--list"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 30s
+
+  # ─────────────────────────────────────────────────────────────
+  # 2. Faker Producer (exposes Prometheus metrics on :8000)
+  # ─────────────────────────────────────────────────────────────
+  faker:
+    build:
+      context: ./producer
+      dockerfile: Dockerfile
+    image: accounting-producer:1.0.0
+    container_name: faker-producer
+    restart: unless-stopped
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: "kafka:9092"
+      KAFKA_TOPIC: transactions
+      EMIT_INTERVAL_SECONDS: "2"
+      PROMETHEUS_PORT: "8000"
+    ports:
+      - "8000:8000"
+    networks:
+      - pipeline
+    depends_on:
+      kafka:
+        condition: service_healthy
+
+  # ─────────────────────────────────────────────────────────────
+  # 3. MinIO
+  # ─────────────────────────────────────────────────────────────
+  minio:
+    image: quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z
+    container_name: minio
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: admin
+      MINIO_ROOT_PASSWORD: password123
+      MINIO_PROMETHEUS_AUTH_TYPE: public
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - minio-data:/data
+    networks:
+      - pipeline
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 15s
+
+  minio-init:
+    image: minio/mc:RELEASE.2025-08-13T08-35-41Z
+    container_name: minio-init
+    restart: "no"
+    networks:
+      - pipeline
+    volumes:
+      - ./data:/historical-data:ro
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: ["/bin/sh", "-c"]
+    command: |
+      "
+      mc alias set myminio http://minio:9000 admin password123
+      mc mb myminio/warehouse --ignore-existing
+      mc mb myminio/flink-checkpoints --ignore-existing
+      echo 'Buckets [warehouse] and [flink-checkpoints] ready.'
+      mc cp /historical-data/historical_transactions.csv myminio/warehouse/pipeline-v2-historical/historical_transactions.csv
+      echo 'Historical data uploaded to warehouse/pipeline-v2-historical/.'
+      "
+
+  # ─────────────────────────────────────────────────────────────
+  # 4. Iceberg REST Catalog
+  # ─────────────────────────────────────────────────────────────
+  iceberg-rest:
+    image: tabulario/iceberg-rest:1.6.0
+    container_name: iceberg-rest
+    restart: unless-stopped
+    environment:
+      CATALOG_WAREHOUSE: s3://warehouse
+      CATALOG_IO__IMPL: org.apache.iceberg.aws.s3.S3FileIO
+      CATALOG_S3_ENDPOINT: http://minio:9000
+      CATALOG_S3_PATH__STYLE__ACCESS: "true"
+      CATALOG_S3_SSL__ENABLED: "false"
+      AWS_ACCESS_KEY_ID: admin
+      AWS_SECRET_ACCESS_KEY: password123
+      AWS_REGION: us-east-1
+    ports:
+      - "8181:8181"
+    networks:
+      - pipeline
+    depends_on:
+      minio-init:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/localhost/8181"]
+      interval: 5s
+      timeout: 3s
+      retries: 15
+      start_period: 10s
+
+  # ─────────────────────────────────────────────────────────────
+  # 5. Kafka→Iceberg Bridge (now exposes Prometheus metrics on :8001)
+  # ─────────────────────────────────────────────────────────────
+  bridge:
+    build:
+      context: ./bridge
+      dockerfile: Dockerfile
+    image: accounting-bridge:2.0.0
+    container_name: kafka-iceberg-bridge
+    restart: unless-stopped
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: "kafka:9092"
+      KAFKA_TOPIC: transactions
+      KAFKA_GROUP_ID: iceberg-bridge
+      MINIO_ENDPOINT: "http://minio:9000"
+      MINIO_ACCESS_KEY: admin
+      MINIO_SECRET_KEY: password123
+      ICEBERG_CATALOG_URI: "http://iceberg-rest:8181"
+      ICEBERG_WAREHOUSE: "s3://warehouse"
+      ICEBERG_NAMESPACE: accounting
+      ICEBERG_TABLE: transactions_iceberg
+      POLL_INTERVAL_SECONDS: "5"
+      BATCH_SIZE: "50"
+      PROMETHEUS_PORT: "8001"
+    ports:
+      - "8001:8001"
+    networks:
+      - pipeline
+    depends_on:
+      kafka:
+        condition: service_healthy
+      iceberg-rest:
+        condition: service_healthy
+
+  # ─────────────────────────────────────────────────────────────
+  # 6. Flink 1.20.4 JobManager
+  # ─────────────────────────────────────────────────────────────
+  flink-jobmanager:
+    build:
+      context: ./flink
+      dockerfile: Dockerfile
+    image: accounting-flink:1.0.0
+    container_name: flink-jobmanager
+    restart: unless-stopped
+    command: jobmanager
+    environment:
+      FLINK_PROPERTIES: |
+        jobmanager.rpc.address: flink-jobmanager
+        taskmanager.numberOfTaskSlots: 4
+        state.backend: filesystem
+        state.checkpoints.dir: file:///tmp/flink-checkpoints
+        execution.checkpointing.interval: 60000
+        parallelism.default: 1
+    ports:
+      - "18081:8081"
+    volumes:
+      - ./flink/sql-jobs:/opt/flink/sql-jobs
+      - flink-checkpoints:/tmp/flink-checkpoints
+    networks:
+      - pipeline
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8081/overview"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 30s
+
+  # ─────────────────────────────────────────────────────────────
+  # 7. Flink 1.20.4 TaskManager
+  # ─────────────────────────────────────────────────────────────
+  flink-taskmanager:
+    image: accounting-flink:1.0.0
+    pull_policy: never
+    container_name: flink-taskmanager
+    restart: unless-stopped
+    command: taskmanager
+    environment:
+      FLINK_PROPERTIES: |
+        jobmanager.rpc.address: flink-jobmanager
+        taskmanager.numberOfTaskSlots: 4
+        state.backend: filesystem
+        state.checkpoints.dir: file:///tmp/flink-checkpoints
+        parallelism.default: 1
+    volumes:
+      - flink-checkpoints:/tmp/flink-checkpoints
+    networks:
+      - pipeline
+    depends_on:
+      flink-jobmanager:
+        condition: service_healthy
+
+  # ─────────────────────────────────────────────────────────────
+  # 8. Trino 480
+  # ─────────────────────────────────────────────────────────────
+  trino:
+    image: trinodb/trino:480
+    container_name: trino
+    restart: unless-stopped
+    ports:
+      - "8889:8080"
+    volumes:
+      - ./trino/catalog:/etc/trino/catalog
+      - ./trino/etc/config.properties:/etc/trino/config.properties
+      - ./trino/etc/jvm.config:/etc/trino/jvm.config
+    networks:
+      - pipeline
+    depends_on:
+      minio:
+        condition: service_healthy
+      iceberg-rest:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/v1/info"]
+      interval: 15s
+      timeout: 10s
+      retries: 15
+      start_period: 45s
+
+  # ─────────────────────────────────────────────────────────────
+  # 9. Prometheus v2.55.1
+  # ─────────────────────────────────────────────────────────────
+  prometheus:
+    image: prom/prometheus:v2.55.1
+    container_name: prometheus
+    restart: unless-stopped
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.retention.time=15d'
+      - '--web.enable-lifecycle'
+    networks:
+      - pipeline
+    depends_on:
+      - faker
+      - bridge
+
+  # ─────────────────────────────────────────────────────────────
+  # 10. Grafana 11.3.0  (live dashboards over Prometheus + Trino)
+  # ─────────────────────────────────────────────────────────────
+  grafana:
+    image: grafana/grafana-oss:11.3.0
+    container_name: grafana
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_INSTALL_PLUGINS: trino-datasource
+      GF_USERS_DEFAULT_THEME: dark
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/accounting-business.json
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    networks:
+      - pipeline
+    depends_on:
+      trino:
+        condition: service_healthy
+      prometheus:
+        condition: service_started

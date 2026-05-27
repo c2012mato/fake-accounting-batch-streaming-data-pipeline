@@ -1,0 +1,4 @@
+kafka-python-ng>=2.2.0
+pyiceberg[s3fs,pyarrow]==0.8.1
+pyarrow==18.1.0
+prometheus-client==0.21.1

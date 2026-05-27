@@ -1,0 +1,31 @@
+################################################################################
+#  Flink 1.20.4 Configuration
+################################################################################
+jobmanager.rpc.address: flink-jobmanager
+jobmanager.memory.process.size: 1600m
+taskmanager.memory.process.size: 1728m
+taskmanager.numberOfTaskSlots: 4
+parallelism.default: 1
+
+# Checkpointing
+state.backend: filesystem
+state.checkpoints.dir: file:///tmp/flink-checkpoints
+execution.checkpointing.interval: 60000
+execution.checkpointing.mode: EXACTLY_ONCE
+
+# S3 / MinIO — used by iceberg-flink s3a:// paths
+s3.endpoint: http://minio:9000
+s3.access-key: admin
+s3.secret-key: password123
+s3.path.style.access: true
+
+# REST
+rest.address: flink-jobmanager
+rest.port: 8081
+
+# Iceberg Hadoop catalog needs these Hadoop S3A props too
+fs.s3a.endpoint: http://minio:9000
+fs.s3a.access.key: admin
+fs.s3a.secret.key: password123
+fs.s3a.path.style.access: true
+fs.s3a.impl: org.apache.hadoop.fs.s3a.S3AFileSystem

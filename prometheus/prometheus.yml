@@ -1,0 +1,21 @@
+global:
+  scrape_interval:     15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: faker-producer
+    static_configs:
+      - targets: ['faker-producer:8000']
+
+  - job_name: bridge
+    static_configs:
+      - targets: ['kafka-iceberg-bridge:8001']
+
+  # Trino has no native Prometheus endpoint in v480 — would need
+  # jmx_prometheus_javaagent. Out of scope for v2; the bridge already
+  # reports the writes-per-second that matters for ETL health.
+
+  - job_name: minio
+    metrics_path: /minio/v2/metrics/cluster
+    static_configs:
+      - targets: ['minio:9000']

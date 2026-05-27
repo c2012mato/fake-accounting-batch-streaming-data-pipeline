@@ -1,0 +1,21 @@
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    type: prometheus
+    uid: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+    editable: false
+
+  - name: Trino
+    type: trino-datasource
+    uid: trino
+    access: proxy
+    url: http://trino:8080
+    jsonData:
+      catalog: iceberg
+      schema: accounting
+      username: admin
+    editable: false

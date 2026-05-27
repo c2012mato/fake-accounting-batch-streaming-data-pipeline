@@ -1,0 +1,217 @@
+{
+  "title": "Accounting Business Dashboard",
+  "uid": "accounting-business",
+  "tags": ["accounting", "trino"],
+  "timezone": "browser",
+  "refresh": "30s",
+  "time": { "from": "now-7d", "to": "now" },
+  "schemaVersion": 39,
+  "panels": [
+    {
+      "id": 1,
+      "title": "Total Revenue",
+      "type": "stat",
+      "gridPos": { "x": 0, "y": 0, "w": 6, "h": 4 },
+      "datasource": { "uid": "trino" },
+      "targets": [
+        {
+          "rawSql": "SELECT CAST(SUM(amount) AS DOUBLE) AS value FROM iceberg.accounting.transactions_iceberg WHERE account_category = 'REVENUE' AND status = 'POSTED'",
+          "format": 1
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencyUSD",
+          "decimals": 2,
+          "color": { "mode": "fixed", "fixedColor": "green" }
+        }
+      }
+    },
+    {
+      "id": 2,
+      "title": "Total Expense",
+      "type": "stat",
+      "gridPos": { "x": 6, "y": 0, "w": 6, "h": 4 },
+      "datasource": { "uid": "trino" },
+      "targets": [
+        {
+          "rawSql": "SELECT CAST(SUM(amount) AS DOUBLE) AS value FROM iceberg.accounting.transactions_iceberg WHERE account_category = 'EXPENSE' AND status = 'POSTED'",
+          "format": 1
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencyUSD",
+          "decimals": 2,
+          "color": { "mode": "fixed", "fixedColor": "red" }
+        }
+      }
+    },
+    {
+      "id": 3,
+      "title": "Net Profit",
+      "type": "stat",
+      "gridPos": { "x": 12, "y": 0, "w": 6, "h": 4 },
+      "datasource": { "uid": "trino" },
+      "targets": [
+        {
+          "rawSql": "SELECT CAST(SUM(CASE WHEN account_category = 'REVENUE' AND status = 'POSTED' THEN amount ELSE 0 END) - SUM(CASE WHEN account_category = 'EXPENSE' AND status = 'POSTED' THEN amount ELSE 0 END) AS DOUBLE) AS value FROM iceberg.accounting.transactions_iceberg",
+          "format": 1
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencyUSD",
+          "decimals": 2,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "green", "value": 0 }
+            ]
+          },
+          "color": { "mode": "thresholds" }
+        }
+      }
+    },
+    {
+      "id": 4,
+      "title": "Total Transactions",
+      "type": "stat",
+      "gridPos": { "x": 18, "y": 0, "w": 6, "h": 4 },
+      "datasource": { "uid": "trino" },
+      "targets": [
+        {
+          "rawSql": "SELECT COUNT(*) AS value FROM iceberg.accounting.transactions_iceberg",
+          "format": 1
+        }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "none" }
+      }
+    },
+    {
+      "id": 5,
+      "title": "Daily Profit",
+      "type": "timeseries",
+      "gridPos": { "x": 0, "y": 4, "w": 24, "h": 9 },
+      "datasource": { "uid": "trino" },
+      "targets": [
+        {
+          "rawSql": "SELECT date_trunc('day', from_iso8601_timestamp(transaction_timestamp)) AS time, CAST(SUM(CASE WHEN account_category = 'REVENUE' AND status = 'POSTED' THEN amount ELSE 0 END) - SUM(CASE WHEN account_category = 'EXPENSE' AND status = 'POSTED' THEN amount ELSE 0 END) AS DOUBLE) AS daily_profit FROM iceberg.accounting.transactions_union WHERE from_iso8601_timestamp(transaction_timestamp) >= $__timeFrom() AND from_iso8601_timestamp(transaction_timestamp) < $__timeTo() GROUP BY 1 ORDER BY 1",
+          "format": 0
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencyUSD",
+          "decimals": 2,
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "green", "value": 0 }
+            ]
+          },
+          "custom": {
+            "drawStyle": "bars",
+            "barAlignment": 0,
+            "fillOpacity": 100,
+            "gradientMode": "scheme",
+            "lineWidth": 0,
+            "pointSize": 5,
+            "showPoints": "never",
+            "stacking": {
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            },
+            "axisCenteredZero": true
+          }
+        }
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "single",
+          "sort": "none"
+        }
+      }
+    },
+    {
+      "id": 6,
+      "title": "Amount by Account Category",
+      "type": "barchart",
+      "gridPos": { "x": 0, "y": 13, "w": 8, "h": 8 },
+      "datasource": { "uid": "trino" },
+      "targets": [
+        {
+          "rawSql": "SELECT account_category, CAST(SUM(amount) AS DOUBLE) AS total_amount FROM iceberg.accounting.transactions_iceberg WHERE status = 'POSTED' GROUP BY account_category ORDER BY total_amount DESC",
+          "format": 1
+        }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "currencyUSD" }
+      },
+      "options": { "xField": "account_category" }
+    },
+    {
+      "id": 7,
+      "title": "Transaction Type Mix",
+      "type": "barchart",
+      "gridPos": { "x": 8, "y": 13, "w": 8, "h": 8 },
+      "datasource": { "uid": "trino" },
+      "targets": [
+        {
+          "rawSql": "SELECT transaction_type, COUNT(*) AS tx_count FROM iceberg.accounting.transactions_iceberg GROUP BY transaction_type ORDER BY tx_count DESC",
+          "format": 1
+        }
+      ],
+      "options": { "xField": "transaction_type" }
+    },
+    {
+      "id": 8,
+      "title": "Status Distribution",
+      "type": "barchart",
+      "gridPos": { "x": 16, "y": 13, "w": 8, "h": 8 },
+      "datasource": { "uid": "trino" },
+      "targets": [
+        {
+          "rawSql": "SELECT status, COUNT(*) AS tx_count FROM iceberg.accounting.transactions_iceberg GROUP BY status ORDER BY tx_count DESC",
+          "format": 1
+        }
+      ],
+      "options": { "xField": "status" }
+    },
+    {
+      "id": 9,
+      "title": "Recent Transactions",
+      "type": "table",
+      "gridPos": { "x": 0, "y": 21, "w": 24, "h": 9 },
+      "datasource": { "uid": "trino" },
+      "targets": [
+        {
+          "rawSql": "SELECT transaction_id, account_name, transaction_type, account_category, entry_type, status, CAST(amount AS DOUBLE) AS amount, transaction_timestamp FROM iceberg.accounting.transactions_iceberg ORDER BY transaction_timestamp DESC LIMIT 100",
+          "format": 1
+        }
+      ],
+      "fieldConfig": {
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "amount" },
+            "properties": [{ "id": "unit", "value": "currencyUSD" }, { "id": "decimals", "value": 2 }]
+          }
+        ]
+      },
+      "options": { "sortBy": [{ "displayName": "transaction_timestamp", "desc": true }] }
+    }
+  ]
+}
