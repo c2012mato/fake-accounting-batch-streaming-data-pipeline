@@ -169,14 +169,3 @@ BATCH_SIZE: "100"
 ```bash
 docker-compose down          # stop, keep volumes
 docker-compose down -v       # stop + wipe all data
-```
-
-## Differences from v1
-
-| | v1 (Evidence) | v2 (Grafana) |
-|---|---|---|
-| Dashboard freshness | Snapshot — stale until `evidence sources` re-run | Live — Trino queried on every 30 s refresh |
-| ETL monitoring | None | Prometheus + Grafana ETL dashboard |
-| Bridge metrics | None | 5 Prometheus metrics on :8001 |
-| Extra services | — | Prometheus, Grafana |
-| Port :3000 | Evidence | Grafana |
