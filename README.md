@@ -2,26 +2,6 @@
 
 ![Architecture Overview](./image/architecture.png)
 
-
-Same streaming core as v1 — Faker → Kafka → Bridge → Iceberg → Trino — with two key upgrades:
-
-- **Grafana** replaces Evidence for dashboards. Every panel queries Trino live on refresh; no `evidence sources` snapshot step required.
-- **Prometheus** is added for ETL monitoring. The producer (`:8000`) and bridge (`:8001`) expose `/metrics`; Prometheus scrapes them every 15 s and Grafana visualises pipeline health alongside business data.
-
-## Architecture
-
-```
-Faker Producer  ──► Kafka 7.7.0 (KRaft)  ──► Kafka→Iceberg Bridge
-  :8000/metrics                                  :8001/metrics
-       │                                               │
-       └──────────► Prometheus :9090 ◄────────────────┘
-                         │
-                    Grafana :3000  ◄──── Trino :8889  ◄──── Iceberg (MinIO)
-                    (live dashboards)   (query engine)       :9000 / :9001
-
-Flink :18081  ──── optional batch SQL over Iceberg (manual trigger)
-```
-
 ## Version Manifest
 
 | Component | Version |
